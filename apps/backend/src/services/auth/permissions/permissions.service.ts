@@ -35,7 +35,7 @@ export class PermissionsService {
     private _postsService: PostsService,
     private _integrationService: IntegrationService,
     private _webhooksService: WebhooksService,
-  ) {}
+  ) { }
   async getPackageOptions(orgId: string) {
     const subscription =
       await this._subscriptionService.getSubscriptionByOrganizationId(orgId);
@@ -174,28 +174,42 @@ export class PermissionsService {
     });
   }
 
+  private async getChannelQuota(orgId: string): Promise<{ limit: number, used: number }> {
+    const { subscription, options } = await this.getPackageOptions(orgId);
+    const integrations = await this._integrationService.getIntegrationsList(orgId);
+    const validChannels = integrations.filter(integration => !integration.refreshNeeded).length;
+    let limit = options.channel;
+    if (subscription && subscription.totalChannels > limit)
+      limit = subscription.totalChannels;
+    return { limit, used: validChannels };
+  }
+
+  private async getWebhooksQuota(orgId: string): Promise<{ limit: number, used: number }> {
+    const { options } = await this.getPackageOptions(orgId);
+    const totalWebhooks = await this._webhooksService.getTotal(orgId);
+    return { limit: options.webhooks, used: totalWebhooks };
+  }
+
+  private async getPostsQuota(orgId: string, created_at: Date): Promise<{ limit: number, used: number }> {
+    const { options } = await this.getPackageOptions(orgId);
+    const subscriptionInfo = await this._subscriptionService.getSubscription(orgId);
+    const createdAt = subscriptionInfo?.createdAt || created_at;
+    const totalMonthsPassed = Math.abs(dayjs(createdAt).diff(dayjs(), 'month'));
+    const checkFrom = dayjs(createdAt).add(totalMonthsPassed, 'month');
+    const count = await this._postsService.countPostsFromDay(orgId, checkFrom.toDate());
+    return { limit: options.posts_per_month, used: count };
+  }
+
   async getRemainingQuota(orgId: string, section: Sections): Promise<number> {
     if (section === Sections.CHANNEL) {
-      const { subscription, options } = await this.getPackageOptions(orgId);
-      const integrations = await this._integrationService.getIntegrationsList(orgId);
-      const validChannels = integrations.filter(integration => !integration.refreshNeeded).length;
-      let limit = options.channel;
-      if (subscription && subscription.totalChannels > limit) {
-        limit = subscription.totalChannels;
-      }
-      return limit - validChannels;
+      const { limit, used } = await this.getChannelQuota(orgId);
+      return limit - used;
     } else if (section === Sections.WEBHOOKS) {
-      const { options } = await this.getPackageOptions(orgId);
-      const totalWebhooks = await this._webhooksService.getTotal(orgId);
-      return options.webhooks - totalWebhooks;
+      const { limit, used } = await this.getWebhooksQuota(orgId);
+      return limit - used;
     } else if (section === Sections.POSTS_PER_MONTH) {
-      const { options } = await this.getPackageOptions(orgId);
-      const subscriptionInfo = await this._subscriptionService.getSubscription(orgId);
-      const createdAt = subscriptionInfo?.createdAt || new Date();
-      const totalMonthsPassed = Math.abs(dayjs(createdAt).diff(dayjs(), 'month'));
-      const checkFrom = dayjs(createdAt).add(totalMonthsPassed, 'month');
-      const count = await this._postsService.countPostsFromDay(orgId, checkFrom.toDate());
-      return options.posts_per_month - count;
+      const { limit, used } = await this.getPostsQuota(orgId, new Date());
+      return limit - used;
     }
     return 0;
   }
